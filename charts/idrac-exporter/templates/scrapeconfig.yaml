@@ -15,7 +15,7 @@ metadata:
   {{- end }}
 spec:
   httpSDConfigs:
-    - url: http://{{ include "idrac-exporter.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}/discover
+    - url: http://bmh-reader-svc.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.discovery.port }}/targets
 {{- with .Values.prometheus.scrapeConfig.interval }}
   scrapeInterval: {{ . }}
 {{- end }}
@@ -31,10 +31,9 @@ spec:
       targetLabel: __param_target
     - sourceLabels: [__param_target]
       targetLabel: instance
-    - sourceLabels: [__meta_url]
+    - action: replace
+      replacement: {{ include "idrac-exporter.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.exporter.port }}
       targetLabel: __address__
-      regex: (https?.{3})([^\/]+)(.+)
-      replacement: $2
 {{- with .Values.prometheus.scrapeConfig.relabelings }}
     {{- toYaml . | nindent 4 }}
 {{- end }}

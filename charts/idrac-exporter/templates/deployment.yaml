@@ -48,7 +48,7 @@ spec:
           {{- end }}
           ports:
             - name: http
-              containerPort: {{ .Values.service.port }}
+              containerPort: {{ .Values.service.exporter.port }}
               protocol: TCP
           livenessProbe:
             {{- toYaml .Values.livenessProbe | nindent 12 }}
@@ -96,3 +96,31 @@ spec:
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: bmh-reader
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: bmh-reader
+  template:
+    metadata:
+      name: bmh-reader-pod
+      labels:
+        app: bmh-reader
+    spec:
+      serviceAccountName: bmh-reader-sa
+      containers:
+        - name: bmh-reader-container
+          image: python:3.9-slim
+          command: ["sh", "-c", "python /scripts/sd.py"]
+          volumeMounts:
+            - name: bmh-reader-volume
+              mountPath: /scripts
+      volumes:
+        - name: bmh-reader-volume
+          configMap:
+            name: bmh-reader-cm

@@ -5,11 +5,24 @@ metadata:
   labels:
     {{- include "idrac-exporter.labels" . | nindent 4 }}
 spec:
-  type: {{ .Values.service.type }}
+  type: {{ .Values.service.exporter.type }}
   ports:
-    - port: {{ .Values.service.port }}
+    - port: {{ .Values.service.exporter.port }}
       targetPort: http
       protocol: TCP
       name: http
   selector:
     {{- include "idrac-exporter.selectorLabels" . | nindent 4 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: bmh-reader-svc
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.service.discovery.port }}
+      targetPort: {{ .Values.service.discovery.port }}
+      protocol: TCP
+  selector:
+    app: bmh-reader

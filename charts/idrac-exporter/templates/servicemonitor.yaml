@@ -14,8 +14,7 @@ metadata:
 spec:
   selector:
     matchLabels:
-      app: {{ template "idrac-exporter.name" . }}
-      release: {{ .Release.Name }}
+      {{- include "idrac-exporter.labels" . | nindent 6 }}
   endpoints:
     - port: http
   {{- if .Values.prometheus.monitor.interval }}

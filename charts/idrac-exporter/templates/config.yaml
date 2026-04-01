@@ -8,3 +8,125 @@ metadata:
 stringData:
   idrac.yml: {{ tpl .Values.idracConfig . | quote }}
 {{- end }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bmh-reader-cm
+data:
+  sd.py: |
+    import os
+    import json
+    import ssl
+    import urllib.request
+    import urllib.parse
+    from http.server import HTTPServer, BaseHTTPRequestHandler
+
+    class BMHDiscoveryHandler(BaseHTTPRequestHandler):
+        def get_k8s_config(self):
+            """
+            Attempts to load Kubernetes API configuration.
+            Prioritizes In-Cluster secrets, falls back to environment variables.
+            """
+            # 1. Try In-Cluster paths
+            token_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+            ca_path = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+            host = os.environ.get("KUBERNETES_SERVICE_HOST")
+            port = os.environ.get("KUBERNETES_SERVICE_PORT_HTTPS")
+
+            if os.path.exists(token_path) and host and port:
+                with open(token_path, "r") as f:
+                    token = f.read().strip()
+                return f"https://{host}:{port}", token, ca_path
+
+            # 2. Fallback to custom Environment Variables for local testing
+            # (Standard lib cannot easily parse YAML ~/.kube/config)
+            token = os.environ.get("K8S_TOKEN")
+            url = os.environ.get("K8S_API_URL")
+            ca = os.environ.get("K8S_CA_CERT") # Path to a CA bundle or None
+
+            if url and token:
+                return url, token, ca
+
+            return None, None, None
+
+        def do_GET(self):
+            if self.path == '/targets':
+                self.handle_targets()
+            else:
+                self.send_error(404, "Not Found")
+
+        def handle_targets(self):
+            api_url, token, ca_path = self.get_k8s_config()
+
+            if not api_url:
+                self.send_response(500)
+                self.end_headers()
+                self.wfile.write(b'{"error": "K8s config not found. Use In-Cluster or set K8S_API_URL/K8S_TOKEN env vars."}')
+                return
+
+            # Prepare request to list BareMetalHosts
+            # URL pattern: /apis/{group}/{version}/baremetalhosts
+            endpoint = f"{api_url}/apis/metal3.io/v1alpha1/baremetalhosts"
+
+            req = urllib.request.Request(endpoint)
+            req.add_header("Authorization", f"Bearer {token}")
+            req.add_header("Accept", "application/json")
+
+            # Configure SSL context
+            context = ssl.create_default_context(cafile=ca_path)
+            if not ca_path:
+                # If no CA provided and not in-cluster, allow insecure for local dev if explicitly requested
+                if os.environ.get("K8S_INSECURE") == "true":
+                    context.check_hostname = False
+                    context.verify_mode = ssl.CERT_NONE
+
+            try:
+                with urllib.request.urlopen(req, context=context) as response:
+                    data = json.loads(response.read().decode())
+
+                targets_list = []
+                for bmh in data.get('items', []):
+                    spec = bmh.get('spec', {})
+                    bmc = spec.get('bmc', {})
+                    address = bmc.get('address', '')
+
+                    if not address:
+                        continue
+
+                    parsed = urllib.parse.urlparse(address)
+                    if 'redfish' not in parsed.scheme:
+                        continue
+
+                    bmc_host = parsed.hostname if parsed.hostname else address
+
+                    target_entry = {
+                        "targets": [bmc_host],
+                        "labels": {
+                            "job": "metal3-bmc",
+                            "bmh_name": bmh['metadata']['name'],
+                            "bmh_namespace": bmh['metadata']['namespace'],
+                            "bmc_protocol": parsed.scheme,
+                            "manufacturer": bmh.get('status', {}).get('hardware', {}).get('systemVendor', {}).get('manufacturer', 'unknown'),
+                            "provisioning_state": bmh.get('status', {}).get('provisioning', {}).get('state', 'unknown')
+                        }
+                    }
+                    targets_list.append(target_entry)
+
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps(targets_list).encode())
+
+            except Exception as e:
+                self.send_response(500)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                error_msg = json.dumps({"error": str(e)})
+                self.wfile.write(error_msg.encode())
+
+    if __name__ == '__main__':
+        server_address = ('', 8080)
+        httpd = HTTPServer(server_address, BMHDiscoveryHandler)
+        print("Starting discovery server on port 8080...")
+        httpd.serve_forever()
